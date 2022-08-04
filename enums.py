@@ -28,7 +28,7 @@ class Direction(Enum):
     OSCILLATION= 2 
 
 @unique
-class BiType(Enum):
+class BIType(Enum):
     OLD = 0
     NEW = 1 
     TB = 2  ##top and bottom 

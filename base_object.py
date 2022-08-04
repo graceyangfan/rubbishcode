@@ -13,6 +13,8 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from typing import Dict, List, Union
+from enums import Direction, Mark
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -106,8 +108,7 @@ class FX:
 
     def power(self):
         """
-        分型力度值，数值越大表示分型力度越大
-        根据第三根K线与前两根K线的位置关系决定
+        the power of FX 
         """
         power = 0
         first_twistbar = self.twist_bars[0]
@@ -116,18 +117,48 @@ class FX:
         if third_twistbar is None:
             return power
         if self.mark_type == Mark.DING:
-            if third_twistbar.high < (second_twistbar.high - (second_twistbar.high - second_twistbar.low) / 2):
-                # 第三个K线的高点，低于第二根的50%以下
+            # 第三个缠论K线要一根单阴线
+            if len(third_twistbar.klines) > 1:
+                return power
+            if third_twistbar.elements[0].close > third_twistbar.elements[0].open:
+                return power
+            # 第三个K线的高点，低于第二根的 50% 以下
+            if third_twistbar.high < (second_twistbar.high - ((second_twistbar.high - second_twistbar.low) * 0.5)):
                 power += 1
+            # 第三个最低点是三根中最低的
             if third_twistbar.low < first_twistbar.low and third_twistbar.low < second_twistbar.low:
-                # 第三个最低点是三根中最低的
+                power += 1
+            # 第三根的K线的收盘价要低于前两个K线
+            if third_twistbar.elements[0].close < first_twistbar.low and third_twistbar.elements[0].close < second_twistbar.low:
+                power += 1
+            # 第三个缠论K线的实体，要大于第二根缠论K线
+            if (third_twistbar.high - third_twistbar.low) > (second_twistbar.high - second_twistbar.low):
+                power += 1
+            # 第三个K线不能有太大的下影线
+            if (third_twistbar.elements[0].high - third_twistbar.elements[0].low) != 0 and \
+                    (third_twistbar.elements[0].close - third_twistbar.elements[0].low) / (third_twistbar.elements[0].high - third_twistbar.elements[0].low) < 0.3:
                 power += 1
         elif self.mark_type == Mark.DI:
-            if third_twistbar.low > (second_twistbar.low + (second_twistbar.high - second_twistbar.low) / 2):
-                # 第三个K线的低点，低于第二根的50%之上
+            # 第三个缠论K线要一根单阳线
+            if len(third_twistbar.klines) > 1:
+                return power
+            if third_twistbar.elements[0].close < third_twistbar.elements[0].open:
+                return power
+            # 第三个K线的低点，高于第二根的 50% 之上
+            if third_twistbar.low > (second_twistbar.low + ((second_twistbar.high - second_twistbar.low) * 0.5)):
                 power += 1
+            # 第三个最高点是三根中最高的
             if third_twistbar.high > first_twistbar.high and third_twistbar.high > second_twistbar.high:
-                # 第三个最低点是三根中最低的
+                power += 1
+            # 第三根的K线的收盘价要高于前两个K线
+            if third_twistbar.elements[0].close > first_twistbar.high and third_twistbar.elements[0].close > second_twistbar.high:
+                power += 1
+            # 第三个缠论K线的实体，要大于第二根缠论K线
+            if (third_twistbar.high - third_twistbar.low) > (second_twistbar.high - second_twistbar.low):
+                power += 1
+            # 第三个K线不能有太大的上影线
+            if (third_twistbar.elements[0].high - third_twistbar.elements[0].low) != 0 and \
+                    (third_twistbar.elements[0].high - third_twistbar.elements[0].close) / (third_twistbar.elements[0].high - third_twistbar.elements[0].low) < 0.3:
                 power += 1
         return power
 
@@ -143,18 +174,22 @@ class LINE:
         self,
         start,
         end,
+        index,
         direction_type, ##Direction 
         power,
         is_confirm,
     ):
         self.start = start 
         self.end = end 
+        self.index = index 
         self.direction_type = direction_type 
         self.power = power 
         self.is_confirm = is_confirm 
 
         self.ts_opened = self.start.ts_opened 
-        self.ts_closed = self.end.ts_closed 
+        self.ts_closed = self.end.ts_closed if self.end else self.ts_opened
+        self.high = 0 
+        self.low = 0 
 
 
     def ding_high(self):
@@ -307,13 +342,14 @@ class BI(LINE):
         self, 
         start: FX, 
         end: FX = None, 
+        index: int = 0,
         direction_type: str = None,
         power: dict = None, 
         is_confirm: bool = None, 
         pause: bool = False, 
         default_zs_type: str = None,
     ):
-        super().__init__(start, end, direction_type, power, is_confirm)
+        super().__init__(start, end, index, direction_type, power, is_confirm)
         self.pause = pause 
         self.default_zs_type = default_zs_type 
         self.trade_points: List[TradePoint] = []  # 买卖点
@@ -447,7 +483,7 @@ class TZXL:
         high: float, 
         low: float, 
         line_broken: bool = False,
-        is_confirm: bool
+        is_confirm: bool = False,
     ):
         self.line: Union[LINE, None] = line
         self.high: float = high
