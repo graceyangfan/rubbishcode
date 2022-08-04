@@ -13,8 +13,9 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from os import set_inheritable
 from typing import Dict, List, Union
-from enums import Direction, Mark
+from enums import Direction, DivergenceType, Mark, TradePointType
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -192,10 +193,10 @@ class LINE:
         self.low = 0 
 
 
-    def ding_high(self):
+    def top_high(self):
         return self.end.value if self.direction_type == Direction.UP else self.start.value
 
-    def di_low(self):
+    def bottom_low(self):
         return self.end.value if self.direction_type == Direction.DOWN else self.start.value
 
     def dd_high_low(self):
@@ -293,45 +294,43 @@ class ZS:
 
 class TradePoint:
     """
-    买卖点对象
+    Trade point on ZS 
     """
 
     def __init__(
         self, 
-        name: str, 
+        side_type: TradePointType,
         zs: ZS
     ):
-        self.name: str = name  # 买卖点名称
-        self.zs: ZS = zs  # 买卖点对应的中枢对象
+        self.side_type = side_type 
+        self.zs: ZS = zs  # zs object 
 
         self.ts_opened = self.zs.ts_opened 
         self.ts_closed = self.zs.ts_closed 
 
     def __str__(self):
-        return 'TradePoint: %s ZS: %s' % (self.name, self.zs)
+        return 'TradePoint: %s ZS: %s' % (self.side_type, self.zs)
 
 
 class BC:
     """
-    背驰对象
+    Divergence object 
     """
 
     def __init__(
-        self, 
-        _type: str, 
-        zs: Union[ZS, None], 
-        compare_line: LINE,
-        compare_lines: List[LINE],
-        bc: bool
+        self,
+        divergence_type: DivergenceType, 
+        zs: ZS, 
+        compare_line: LINE, 
+        is_divergence: bool
     ):
-        self.type: str = _type  # 背驰类型 （bi 笔背驰 xd 线段背驰 zsd 走势段背驰 pz 盘整背驰 qs 趋势背驰）
-        self.zs: Union[ZS, None] = zs  # 背驰对应的中枢
-        self.compare_line: LINE = compare_line  # 比较的笔 or 线段， 在 笔背驰、线段背驰、盘整背驰有用
-        self.compare_lines: List[LINE] = compare_lines  # 在趋势背驰的时候使用
-        self.bc = bc  # 是否背驰
+        self.divergence_type: DivergenceType = divergence_type  ## divergence type 
+        self.zs: ZS = zs  # 
+        self.compare_line: LINE = compare_line  ##  compared xd or bi 
+        self.is_divergence = is_divergence  #  if is divergence 
 
     def __str__(self):
-        return f'BC type: {self.type} bc: {self.bc} zs: {self.zs}'
+        return 'DivergenceType: %s is_divergence: %s zs: %s' % (self.divergence_type, self.is_divergence, self.zs)
 
 class BI(LINE):
     """
@@ -347,127 +346,85 @@ class BI(LINE):
         power: dict = None, 
         is_confirm: bool = None, 
         pause: bool = False, 
-        default_zs_type: str = None,
     ):
         super().__init__(start, end, index, direction_type, power, is_confirm)
-        self.pause = pause 
-        self.default_zs_type = default_zs_type 
-        self.trade_points: List[TradePoint] = []  # 买卖点
-        self.bcs: List[BC] = []  # 背驰信息
-        self.pause: bool = pause  # 笔是否停顿
-        # 记录不同中枢下的背驰和买卖点
-        self.zs_type_trade_points: Dict[str, List[TradePoint]] = {}
-        self.zs_type_bcs: Dict[str, List[BC]] = {}
+        self.pause: bool = pause  # paused 
+        self.trade_points: Dict[TradePointType, List[TradePoint]] = {}
+        self.divergences: Dict[DivergenceType, List[BC]] = {} # Divergence info 
 
-    def get_trade_points(self, zs_type: str = None) -> List[TradePoint]:
-        if zs_type is None:
-            return self.trade_points
-        if zs_type not in self.zs_type_trade_points.keys():
+    def get_trade_points(
+        self, 
+        side_type: TradePointType,
+    ) -> List[TradePoint]:
+
+        if not side_type:
+            return self.trade_points 
+        if  side_type not in self.trade_points.keys():
             return []
-        return self.zs_type_trade_points[zs_type]
+        return self.trade_points[side_type] 
 
-    def get_bcs(self, zs_type: str = None) -> List[BC]:
-        if zs_type is None:
-            return self.bcs
-        if zs_type not in self.zs_type_bcs.keys():
-            return []
-        return self.zs_type_bcs[zs_type]
+    def get_divergences(
+        self, 
+        divergence_type: DivergenceType, 
+    ) -> List[BC]:
+        if not divergence_type:
+            return self.divergences 
+        elif divergence_type not in self.divergences.keys():
+            return [] 
+    
+        return self.divergences[divergence_type] 
 
-    def add_trade_point(self, name: str, zs: ZS, zs_type: str) -> bool:
+
+    def add_trade_point(
+        self, 
+        side_type:TradePointType,
+        zs:ZS) -> bool:
         """
-        添加买卖点
+        add trade point 
         """
-        trade_point_obj = TradePoint(name, zs)
-        if zs_type == self.default_zs_type:
-            self.trade_points.append(trade_point_obj)
-
-        if zs_type not in self.zs_type_trade_points.keys():
-            self.zs_type_trade_points[zs_type] = []
-        self.zs_type_trade_points[zs_type].append(trade_point_obj)
+        trade_point_obj = TradePoint(side_type, zs)
+        if side_type not in self.trade_points.keys():
+            self.trade_points[side_type] = [] 
+        self.trade_points[side_type].append(trade_point_obj) 
         return True
 
-    def add_bc(
+
+    def add_divergence(
             self,
-            _type: str,
+            divergence_type: DivergenceType,
             zs: Union[ZS, None],
             compare_line: Union[LINE, None],
-            compare_lines: List[LINE],
-            bc: bool,
-            zs_type: str
+       is_divergence: bool
     ) -> bool:
         """
-        添加背驰点
+        add divergences 
         """
-        bc_obj = BC(_type, zs, compare_line, compare_lines, bc)
-        if zs_type == self.default_zs_type:
-            self.bcs.append(bc_obj)
-        if zs_type not in self.zs_type_bcs.keys():
-            self.zs_type_bcs[zs_type] = []
-        self.zs_type_bcs[zs_type].append(bc_obj)
+        divergence_obj = BC(divergence_type, zs, compare_line, is_divergence)
+        if divergence_type  not in self.divergences.keys():
+            self.divergences[divergence_type] = [] 
+        self.divergences[divergence_type].append(divergence_obj) 
 
         return True
 
-    def line_trade_points(self, zs_type: Union[str, None] = None) -> list:
+    def trade_type_exists(
+        self, 
+        side_type_list: list
+    ) -> bool:
         """
-        返回当前线所有买卖点名称
-        zs_type 如果等于  | ，获取当前笔所有中枢的买卖点 合集
-        zs_type 如果等于  & ，获取当前笔所有中枢的买卖点 交集
+        check if has special trade_type 
         """
-        if zs_type is None:
-            return [m.name for m in self.trade_points]
+        all_types = self.trade_points.keys() 
+        return len(set(side_type_list) & set(all_types)) > 0
 
-        if zs_type == '|':
-            trade_points = []
-            for zs_type in self.zs_type_trade_points.keys():
-                trade_points += self.line_trade_points(zs_type)
-            return list(set(trade_points))
-        if zs_type == '&':
-            trade_points = self.line_trade_points()
-            for zs_type in self.zs_type_trade_points.keys():
-                trade_points = set(trade_points) & set(self.line_trade_points(zs_type))
-            return list(trade_points)
-
-        if zs_type not in self.zs_type_trade_points.keys():
-            return []
-        return [m.name for m in self.zs_type_trade_points[zs_type]]
-
-    def line_bcs(self, zs_type: Union[str, None] = None) -> list:
+    def divergence_type_exists(
+        self,
+        divergence_type_list: list
+    ) -> bool:
         """
-        返回当前线所有的背驰类型
-        zs_type 如果等于  | ，获取当前笔所有中枢的买卖点 合集
-        zs_type 如果等于  & ，获取当前笔所有中枢的买卖点 交集
+        check if has special divergence type 
         """
-        if zs_type is None:
-            return [_bc.type for _bc in self.bcs if _bc.bc]
-
-        if zs_type == '|':
-            bcs = []
-            for zs_type in self.zs_type_bcs.keys():
-                bcs += self.line_bcs(zs_type)
-            return list(set(bcs))
-        if zs_type == '&':
-            bcs = self.line_bcs()
-            for zs_type in self.zs_type_bcs.keys():
-                bcs = set(bcs) & set(self.line_bcs(zs_type))
-            return list(bcs)
-
-        if zs_type not in self.zs_type_bcs.keys():
-            return []
-        return [_bc.type for _bc in self.zs_type_bcs[zs_type] if _bc.bc]
-
-    def trade_point_exists(self, check_trade_points: list, zs_type: Union[str, None] = None) -> bool:
-        """
-        检查当前笔是否包含指定的买卖点的一个
-        """
-        trade_points = self.line_trade_points(zs_type)
-        return len(set(check_trade_points) & set(trade_points)) > 0
-
-    def bc_exists(self, bc_types: list, zs_type: Union[str, None] = None) -> bool:
-        """
-        检查是否有背驰的情况
-        """
-        bcs = self.line_bcs(zs_type)
-        return len(set(bc_types) & set(bcs)) > 0
+        all_types = self.divergences.keys() 
+        return len(set(divergence_type_list) & set(all_types)) > 0
 
 
 class TZXL:
@@ -477,26 +434,19 @@ class TZXL:
 
     def __init__(
         self, 
-        line: Union[LINE, None], 
-        pre_line: LINE, 
-        mark_type: Mark,
         high: float, 
         low: float, 
+        line: Union[LINE, None], 
         line_broken: bool = False,
-        is_confirm: bool = False,
     ):
-        self.line: Union[LINE, None] = line
         self.high: float = high
         self.low: float = low 
-        self.pre_line: LINE = pre_line
+        self.line: Union[LINE, None] = line
         self.line_broken: bool = line_broken
-        self.is_up_line: bool = False
-        self.lines: List[LINE] = [line]
-        self.is_confirm: bool = is_confirm
 
 class XLFX:
     """
-    序列分型,3笔成一个分型 
+    Three bi => one xlfx 
     """
 
     def __init__(
@@ -516,11 +466,12 @@ class XLFX:
         self.low = low
         self.line = line
 
-        self.jump = jump  # 分型是否有缺口
-        self.line_broken = line_broken  # 标记是否线破坏
-        self.fx_high = fx_high  # 三个分型特征序列的最高点
-        self.fx_low = fx_low  # 三个分型特征序列的最低点
-        self.is_confirm = is_confirm  # 序列分型是否完成
+        self.jump = jump  # 
+        self.line_broken = line_broken  # 
+        self.fx_high = fx_high  # 
+        self.fx_low = fx_low  #
+        self.is_confirm = is_confirm  # 
+
 
 
 class XD(LINE):
@@ -540,18 +491,21 @@ class XD(LINE):
         ding_fx: XLFX = None, 
         di_fx: XLFX = None, 
         power: dict = None,
+        index: int = 0,
         is_confirm: bool = True,
-        default_zs_type: str = None
     ):
-        super().__init__(start, end, high, low, direction_type, power, is_confirm)
+        super().__init__(start, end, index, direction_type, power, is_confirm)
+        self.high = high 
+        self.low = low 
 
         self.start_line: LINE = start_line  # 线段起始笔
         self.end_line: LINE = end_line  # 线段结束笔
         self.ding_fx: XLFX = ding_fx
         self.di_fx: XLFX = di_fx
+        self.index = index 
 
-        self.trade_points: List[TradePoint] = []  # 买卖点
-        self.bcs: List[BC] = []  # 背驰信息
+        self.trade_points: Dict[TradePointType, List[TradePoint]] = {}
+        self.divergences: Dict[DivergenceType, List[BC]] = {} # Divergence info 
 
     def is_jump(self):
         """
@@ -571,110 +525,80 @@ class XD(LINE):
         else:
             return self.di_fx.line_broken
 
-    def get_trade_points(self, zs_type: str = None) -> List[TradePoint]:
-        if zs_type is None:
-            return self.trade_points
-        if zs_type not in self.zs_type_trade_points.keys():
-            return []
-        return self.zs_type_trade_points[zs_type]
+    def get_trade_points(
+        self, 
+        side_type: TradePointType,
+    ) -> List[TradePoint]:
 
-    def get_bcs(self, zs_type: str = None) -> List[BC]:
-        if zs_type is None:
-            return self.bcs
-        if zs_type not in self.zs_type_bcs.keys():
+        if not side_type:
+            return self.trade_points 
+        if  side_type not in self.trade_points.keys():
             return []
-        return self.zs_type_bcs[zs_type]
+        return self.trade_points[side_type] 
 
-    def add_trade_point(self, name: str, zs: ZS, zs_type: str) -> bool:
+    def get_divergences(
+        self, 
+        divergence_type: DivergenceType, 
+    ) -> List[BC]:
+        if not divergence_type:
+            return self.divergences 
+        elif divergence_type not in self.divergences.keys():
+            return [] 
+    
+        return self.divergences[divergence_type] 
+
+
+    def add_trade_point(
+        self, 
+        side_type:TradePointType,
+        zs:ZS) -> bool:
         """
-        添加买卖点
+        add trade point 
         """
-        trade_point_obj = TradePoint(name, zs)
-        if zs_type == self.default_zs_type:
-            self.trade_points.append(trade_point_obj)
-        if zs_type not in self.zs_type_trade_points.keys():
-            self.zs_type_trade_points[zs_type] = []
-        self.zs_type_trade_points[zs_type].append(trade_point_obj)
+        trade_point_obj = TradePoint(side_type, zs)
+        if side_type not in self.trade_points.keys():
+            self.trade_points[side_type] = [] 
+        self.trade_points[side_type].append(trade_point_obj) 
         return True
 
-    def add_bc(
-            self, _type: str, zs: Union[ZS, None],
-            compare_line: LINE, compare_lines: List[LINE], bc: bool,
-            zs_type: str
+
+    def add_divergence(
+            self,
+            divergence_type: DivergenceType,
+            zs: Union[ZS, None],
+            compare_line: Union[LINE, None],
+       is_divergence: bool
     ) -> bool:
         """
-        添加背驰点
+        add divergences 
         """
-        bc_obj = BC(_type, zs, compare_line, compare_lines, bc)
-        if zs_type == self.default_zs_type:
-            self.bcs.append(bc_obj)
-        if zs_type not in self.zs_type_bcs.keys():
-            self.zs_type_bcs[zs_type] = []
-        self.zs_type_bcs[zs_type].append(bc_obj)
+        divergence_obj = BC(divergence_type, zs, compare_line, is_divergence)
+        if divergence_type  not in self.divergences.keys():
+            self.divergences[divergence_type] = [] 
+        self.divergences[divergence_type].append(divergence_obj) 
+
         return True
 
-    def line_trade_points(self, zs_type: Union[str, None] = None) -> list:
+    def trade_type_exists(
+        self, 
+        side_type_list: list
+    ) -> bool:
         """
-        返回当前线所有买卖点名称
-        zs_type 如果等于  | ，获取当前笔所有中枢的买卖点 合集
-        zs_type 如果等于  & ，获取当前笔所有中枢的买卖点 交集
+        check if has special trade_type 
         """
-        if zs_type is None:
-            return [m.name for m in self.trade_points]
+        all_types = self.trade_points.keys() 
+        return len(set(side_type_list) & set(all_types)) > 0
 
-        if zs_type == '|':
-            trade_points = []
-            for zs_type in self.zs_type_trade_points.keys():
-                trade_points += self.line_trade_points(zs_type)
-            return list(set(trade_points))
-        if zs_type == '&':
-            trade_points = self.line_trade_points()
-            for zs_type in self.zs_type_trade_points.keys():
-                trade_points = set(trade_points) & set(self.line_trade_points(zs_type))
-            return list(trade_points)
-
-        if zs_type not in self.zs_type_trade_points.keys():
-            return []
-        return [m.name for m in self.zs_type_trade_points[zs_type]]
-
-    def line_bcs(self, zs_type: Union[str, None] = None) -> list:
+    def divergence_type_exists(
+        self,
+        divergence_type_list: list
+    ) -> bool:
         """
-        返回当前线所有的背驰类型
-        zs_type 如果等于  | ，获取当前笔所有中枢的买卖点 合集
-        zs_type 如果等于  & ，获取当前笔所有中枢的买卖点 交集
+        check if has special divergence type 
         """
-        if zs_type is None:
-            return [_bc.type for _bc in self.bcs if _bc.bc]
-
-        if zs_type == '|':
-            bcs = []
-            for zs_type in self.zs_type_bcs.keys():
-                bcs += self.line_bcs(zs_type)
-            return list(set(bcs))
-        if zs_type == '&':
-            bcs = self.line_bcs()
-            for zs_type in self.zs_type_bcs.keys():
-                bcs = set(bcs) & set(self.line_bcs(zs_type))
-            return list(bcs)
-
-        if zs_type not in self.zs_type_bcs.keys():
-            return []
-        return [_bc.type for _bc in self.zs_type_bcs[zs_type] if _bc.bc]
-
-    def trade_point_exists(self, check_trade_points: list, zs_type: Union[str, None] = None) -> bool:
-        """
-        检查当前笔是否包含指定的买卖点的一个
-        """
-        trade_points = self.line_trade_points(zs_type)
-        return len(set(check_trade_points) & set(trade_points)) > 0
-
-    def bc_exists(self, bc_types: list, zs_type: Union[str, None] = None) -> bool:
-        """
-        检查是否有背驰的情况
-        """
-        bcs = self.line_bcs(zs_type)
-        return len(set(bc_types) & set(bcs)) > 0
-
+        all_types = self.divergences.keys() 
+        return len(set(divergence_type_list) & set(all_types)) > 0
+   
     def is_confirm(self) -> bool:
         """
         线段是否完成

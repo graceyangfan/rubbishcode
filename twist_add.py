@@ -112,10 +112,10 @@ class Twist:
         self.fxs = []             # 分型列表 
         self.real_fxs = []   
         self.bis = [] 
-        self.xds = deque(maxlen=config.xd_capacity)
-        self.big_trends = deque(maxlen=config.trend_capacity)
-        self.bi_zss = deque(maxlen=config.bi_zs_capacity)
-        self.xd_zss = deque(maxlen=config.xd_zs_capacity) 
+        self.xds = []
+        self.big_trends = []
+        self.bi_zss = []
+        self.xd_zss = []
         self.bar_count= 0 
 
     def on_start(self,strategy: Strategy):
@@ -157,8 +157,9 @@ class Twist:
         ##update bi 
         bi_update = self.process_bi()
 
-        ##update bi 
-        
+        ##update xd from bi 
+        xd_update = self.process_up_line(LineType.BI) if bi_update else False
+        #self.process_up_line(LineType.XD) if xd_update else False
 
         ##update bar_count 
         self.bar_count += 1
@@ -384,7 +385,6 @@ class Twist:
             self.bis.pop()
         
         bi = self.bis[-1] if len(self.bis) > 0 else None 
-
         ##check bi  pause 
         if bi:
             close = self.newbars[-1].close 
@@ -410,19 +410,20 @@ class Twist:
                 bi.jump = False 
                 self.process_line_power(bi)
                 self.process_line_hl(bi)
+                self.bis.append(bi)
                 return True 
 
         ## decide the last fx 
         end_real_fx = self.fxs[-1]
         if (bi.end.real is False and bi.end.mark_type == end_real_fx.mark_type) or \
-            (bi.end.ts_opened == end_real_fx.ts_opened and bi.is_confirm != end_real_fx.is_confirm):
+            (bi.end.index == end_real_fx.index and bi.is_confirm != end_real_fx.is_confirm):
             bi.end = end_real_fx 
             bi.is_confirm = end_real_fx.is_confirm 
             self.process_line_power(bi)
             self.process_line_hl(bi)
             return True 
 
-        if bi.end.ts_opened < end_real_fx.ts_opened and bi.end.mark_type != end_real_fx.mark_type:
+        if bi.end.index < end_real_fx.index and bi.end.mark_type != end_real_fx.mark_type:
             # new bi generate 
             new_bi = BI(start=bi.end, end=end_real_fx)
             new_bi.index = self.bis[-1].index + 1
@@ -436,6 +437,156 @@ class Twist:
 
         return False
 
+    def process_up_line(
+        self,
+        base_line_type = LineType.BI,
+    ):
+        """
+        Aggregate bis into XLFX and XD.
+        """
+        is_update = False
+        if base_line_type == LineType.BI:
+            up_lines = self.xds
+            base_lines = self.bis
+        elif base_line_type == LineType.XD:
+            up_lines = self.big_trends
+            base_lines = self.xds
+        else:
+            raise ('high level xd name is wrong：%s' % base_line_type)
+
+        if len(base_lines) == 0:
+            return False
+        ##first time update XD 
+        if len(up_lines) == 0:
+            bi_0 = base_lines[0] 
+            start_fx = XLFX(
+                mark_type= Mark.DI if bi_0.direction_type == Direction.UP else Mark.DING,
+                high = bi_0.high,
+                low = bi_0.low,
+                line = bi_0, 
+            )
+            end_fx = None 
+            if start_fx.mark_type == Mark.DI:
+                dis = self.cal_line_xlfx(base_lines, Mark.DI)
+                for di in dis:
+                    if di.line.index > start_fx.line.index: 
+                        start_fx = di 
+                dings = self.cal_line_xlfx(base_lines[start_fx.line.index:], Mark.DING) 
+                for ding in dings:
+                    if ding.line.index - start_fx.line.index >= 2:
+                        ## general new XD 
+                        end_fx = ding
+                        break
+            elif start_fx.mark_type == Mark.DING:
+                dings = self.cal_line_xlfx(base_lines, Mark.DING)
+                for ding in dings:
+                    if ding.line.index > start_fx.line.index:
+                        start_fx = ding 
+                dis  = self.cal_line_xlfx(base_lines[start_fx.line.index:], Mark.DI)
+                for di in dis:
+                    if di.line.index - start_fx.line.index >=2:
+                        end_fx = di 
+
+            if start_fx and end_fx:
+                start_line = start_fx.line 
+                end_line = base_lines[end_fx.line.index-1]
+                new_up_line = XD(
+                    start = start_line.start,
+                    end = end_line.end,
+                    start_line= start_line,
+                    end_line = end_line,
+                    direction_type = Direction.UP if end_fx.mark_type == Mark.DING else Direction.DOWN,
+                    ding_fx = start_fx if start_fx.mark_type == Mark.DING else end_fx,
+                    di_fx = start_fx if start_fx.mark_type == Mark.DI else end_fx,
+                    is_confirm= end_fx.is_confirm,
+                )
+                self.process_line_power(new_up_line)
+                self.process_line_hl(new_up_line)
+                up_lines.append(new_up_line)
+                return True
+            else:
+                return False
+
+
+        ## generally update XD 
+        up_line = up_lines[-1]
+        ## if extened 
+        if up_line.direction_type == Direction.UP:
+            dings = self.cal_line_xlfx(base_lines[up_line.start_line.index:],Mark.DING) 
+            for ding in dings:
+                if ding.line.index >=up_line.end_line.index:
+                    end_line = base_lines[ding.line.index - 1]
+                    up_line.end = end_line.end 
+                    up_line.end_line = end_line 
+                    up_line.ding_fx = ding 
+                    up_line.is_confirm = ding.is_confirm 
+                    self.process_line_power(up_line)
+                    self.process_line_hl(up_line)
+                    is_update = True 
+        elif up_line.direction_type == Direction.DOWN:
+            dis = self.cal_line_xlfx(base_lines[up_line.start_line.index:], Mark.DI)
+            for di in dis:
+                if di.line.index >= up_line.end_line.index:
+                    end_line = base_lines[di.line.index - 1]
+                    up_line.end = end_line.end
+                    up_line.end_line = end_line 
+                    up_line.di_fx = di 
+                    up_line.is_confirm = di.is_confirm 
+                    self.process_line_power(up_line)
+                    self.process_line_hl(up_line)
+                    is_update = True
+
+        ##check if has inverse-direction XLFX to generate new XD 
+        if up_line.direction_type == Direction.UP:
+            dis = self.cal_line_xlfx(base_lines[up_line.end_line.index+1:],Mark.DI)
+            for di in dis:
+                if di.line.index - up_line.end_line.index >=2 :
+                    start_line = base_lines[up_line.end_line.index+1]
+                    end_line = base_lines[di.line.index-1]
+                    new_up_line = XD(
+                        start= start_line.start,
+                        end = end_line.end,
+                        start_line= start_line,
+                        end_line = end_line,
+                        direction_type= Direction.DOWN,
+                        ding_fx= up_line.ding_fx,
+                        di_fx = di,
+                        index = up_line.index + 1,
+                        is_confirm= di.is_confirm,
+                    )
+                    self.process_line_power(new_up_line)
+                    self.process_line_hl(new_up_line)
+                    # two DD uncomplete 
+                    up_line.is_confirm = True 
+                    up_lines.append(new_up_line)
+                    is_update = True
+                    break
+        elif up_line.direction_type == Direction.DOWN:
+            dings = self.cal_line_xlfx(base_lines[up_line.end_line.index + 1:], Mark.DING)
+            for ding in dings:
+                if ding.line.index - up_line.end_line.index >= 2: 
+                    start_line = base_lines[up_line.end_line.index + 1]
+                    end_line = base_lines[ding.line.index - 1]
+                    new_up_line = XD(
+                        start=start_line.start,
+                        end=end_line.end,
+                        start_line=start_line,
+                        end_line=end_line,
+                        direction_type= Direction.UP,
+                        ding_fx=ding,
+                        di_fx=up_line.di_fx,
+                        index = up_line.index + 1,
+                        is_confirm= ding.is_confirm,
+                    )
+                    self.process_line_power(new_up_line)
+                    self.process_line_hl(new_up_line)
+                    ## two DD uncomplete 
+                    up_line.is_confirm = True
+                    up_lines.append(new_up_line)
+                    is_update = True
+                    break
+
+        return is_update
 
 
     def process_line_power(self, line: LINE):
@@ -454,7 +605,7 @@ class Twist:
         if self.zs_support_type == SupportType.HL:
             return [line.high,line.low]
         else:
-            return [line.ding_high(),line.di_low()]
+            return [line.top_high(),line.bottom_low()]
 
     def process_line_hl(self, line: LINE):
         """
@@ -548,3 +699,127 @@ class Twist:
                 up_twist_bars.append(twist_bar) 
                 
         return  twist_bars 
+
+    @staticmethod
+    def cal_line_xlfx(
+        lines: List[LINE],
+        fx_type= Mark.DING,
+    ) -> List[XLFX]:
+        """
+        use line high low point two compute XLFXS
+        """
+        sequence= []
+        for line in lines:
+            if (fx_type == Mark.DING and line.direction_type == Direction.DOWN) or (fx_type == Mark.DI and line.direction_type == Direction.UP):
+                now_xl = TZXL(
+                        high = line.top_high(),
+                        low = line.bottom_low(),
+                        line = line,
+                        line_broken= False,
+                )
+                if len(sequence) == 0:
+                    sequence.append(now_xl)
+                    continue 
+
+                trend = Direction.UP if fx_type == Mark.DING else Direction.DOWN 
+                up_xl = sequence[-1] 
+
+                if up_xl.high > now_xl.high and up_xl.low <=now_xl.low:
+                    if trend == Direction.UP:
+                        now_xl.line = now_xl.line if now_xl.high >= up_xl.high else up_xl.line 
+                        now_xl.high = max(up_xl.high,now_xl.high) 
+                        now_xl.low = max(up_xl.low,now_xl.low)
+                    else:
+                        now_xl.line = now_xl.line if now_xl.low <= up_xl.low else up_xl.line 
+                        now_xl.high = min(up_xl.high,now_xl.high) 
+                        now_xl.low = min(up_xl.low,now_xl.low) 
+                    sequence.pop() 
+                    sequence.append(now_xl) 
+                elif up_xl.high < now_xl.high and up_xl.low > now_xl.low:
+                    #strong included ,current xl include front xl
+                    now_xl.line_broken = True 
+                    sequence.append(now_xl)
+                else:
+                    sequence.append(now_xl)
+        xlfxs: List[XLFX] = [] 
+        for i in range(1,len(sequence)):
+            up_xl = sequence[i-1]
+            now_xl = sequence[i] 
+            if len(sequence) > (i+1):
+                next_xl = sequence[i+1]
+            else:
+                next_xl = None 
+
+            jump = True if up_xl.high < now_xl.low or up_xl.low > now_xl.high else False 
+
+            if next_xl:
+                fx_high = max(up_xl.high, now_xl.high, next_xl.high)
+                fx_low = min(up_xl.low, now_xl.low, next_xl.low)
+
+                if fx_type == Mark.DING and up_xl.high < now_xl.high and now_xl.high > next_xl.high:
+                    now_xl.mark_type = Mark.DING 
+                    xlfxs.append(
+                        XLFX(
+                            mark_type =Mark.DING,
+                            high = now_xl.high,
+                            low = now_xl.low,
+                            line = now_xl.line,
+                            jump = jump,
+                            line_broken= now_xl.line_broken,
+                            fx_high = fx_high,
+                            fx_low = fx_low,
+                            is_confirm = True,
+                        )
+                    )
+                if fx_type == Mark.DI and up_xl.low > now_xl.low and now_xl.low < next_xl.low:
+                    now_xl.mark_type = Mark.DI
+                    xlfxs.append(
+                        XLFX(
+                            mark_type = Mark.DI,
+                            high = now_xl.high,
+                            low = now_xl.low,
+                            line = now_xl.line,
+                            jump =jump,
+                            line_broken= now_xl.line_broken,
+                            fx_high = fx_high,
+                            fx_low = fx_low,
+                            is_confirm = True,
+                        )
+                    )
+            else:
+                ##uncomplete FX 
+                fx_high = max(up_xl.high,now_xl.high)
+                fx_low = min(up_xl.low,now_xl.low)
+
+                if fx_type == Mark.DING and up_xl.high < now_xl.high:
+                    now_xl.mark_type = Mark.DING 
+                    xlfxs.append(
+                        XLFX(
+                            mark_type =Mark.DING,
+                            high = now_xl.high,
+                            low = now_xl.low,
+                            line = now_xl.line,
+                            jump = jump,
+                            line_broken= now_xl.line_broken,
+                            fx_high = fx_high,
+                            fx_low = fx_low,
+                            is_confirm = False,
+                        )
+                    )
+                if fx_type == Mark.DI and up_xl.low > now_xl.low:
+                    now_xl.mark_type = Mark.DI
+                    xlfxs.append(
+                        XLFX(
+                            mark_type = Mark.DI,
+                            high = now_xl.high,
+                            low = now_xl.low,
+                            line = now_xl.line,
+                            jump =jump,
+                            line_broken= now_xl.line_broken,
+                            fx_high = fx_high,
+                            fx_low = fx_low,
+                            is_confirm = False,
+                        )
+                    )
+
+        return xlfxs
